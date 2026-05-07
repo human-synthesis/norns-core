@@ -1,25 +1,26 @@
 {
-  "name": "svelte-monorepo",
+  "name": "norns-core-monorepo",
   "version": "0.0.1",
-  "description": "monorepo for svelte and friends",
+  "description": "monorepo for norns-core (forked from svelte)",
   "private": true,
   "type": "module",
   "license": "MIT",
-  "packageManager": "pnpm@10.4.0",
-  "engines": {
-    "pnpm": ">=9.0.0"
-  },
+  "packageManager": "bun@1.2.16",
+  "workspaces": [
+    "packages/*",
+    "playgrounds/*"
+  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sveltejs/svelte.git"
+    "url": "git+https://github.com/human-synthesis/norns-core.git"
   },
   "scripts": {
-    "build": "pnpm -r --filter=./packages/* build",
-    "check": "cd packages/svelte && pnpm build && cd ../../ && pnpm -r check",
+    "build": "bun --filter './packages/*' run build",
+    "check": "cd packages/svelte && bun run build && cd ../../ && bun --filter '*' run check",
     "lint": "eslint && prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run",
-    "changeset:version": "changeset version && pnpm -r generate:version && git add --all",
+    "changeset:version": "changeset version && bun --filter '*' run generate:version && git add --all",
     "changeset:publish": "changeset publish",
     "bench": "NODE_ENV=production node --allow-natives-syntax ./benchmarking/run.js",
     "bench:compare": "NODE_ENV=production node --allow-natives-syntax ./benchmarking/compare/index.js",
