@@ -1,2 +1,1 @@
-export { nornsPreprocess } from './preprocess.js';
-export { nornsUno } from './uno.js';
+export { nornsPreprocess, fuseRuneDeclarations } from './preprocess.js';
