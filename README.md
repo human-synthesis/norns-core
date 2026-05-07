@@ -1,38 +1,38 @@
-<a href="https://svelte.dev">
-	<picture>
-		<source media="(prefers-color-scheme: dark)" srcset="assets/banner_dark.png">
-		<img src="assets/banner.png" alt="Svelte - web development for the rest of us" />
-	</picture>
-</a>
+# Norns Core
 
-[![License](https://img.shields.io/npm/l/svelte.svg)](LICENSE.md) [![Chat](https://img.shields.io/discord/457912077277855764?label=chat&logo=discord)](https://svelte.dev/chat)
+**AI-driven software architecture and development framework, based on Svelte.**
 
-## What is Svelte?
+Svelte preprocessor for the Norns stack: Pug + CoffeeScript in `.n` files, with the small set of fixes needed to make Svelte 5 runes feel native in Coffee.
 
-Svelte is a new way to build web applications. It's a compiler that takes your declarative components and converts them into efficient JavaScript that surgically updates the DOM.
+## Stack
 
-Learn more at the [Svelte website](https://svelte.dev), or stop by the [Discord chatroom](https://svelte.dev/chat).
+- [Svelte 5](https://svelte.dev) — components and runes
+- [Pug](https://pugjs.org) — templates
+- [CoffeeScript 2](https://coffeescript.org) — script
+- [Vite](https://vitejs.dev) — bundler
+- [bun](https://bun.sh) — runtime / package manager
 
-## Supporting Svelte
+## Install
 
-Svelte is an MIT-licensed open source project with its ongoing development made possible entirely by fantastic volunteers. If you'd like to support their efforts, please consider:
+```sh
+bun add -D @human-synthesis/norns-core svelte
+```
 
-- [Becoming a backer on Open Collective](https://opencollective.com/svelte).
+Most users want the umbrella package [`@human-synthesis/norns`](https://github.com/human-synthesis/norns) instead.
 
-Funds donated via Open Collective will be used for compensating expenses related to Svelte's development such as hosting costs. If sufficient donations are received, funds may also be used to support Svelte's development more directly.
+## Usage
 
-## Roadmap
+`svelte.config.js`:
 
-You may view [our roadmap](https://svelte.dev/roadmap) if you'd like to see what we're currently working on.
+```js
+import { nornsPreprocess } from '@human-synthesis/norns-core/preprocess';
 
-## Contributing
-
-Please see the [Contributing Guide](CONTRIBUTING.md) and the [`svelte`](packages/svelte) package for information on contributing to Svelte.
-
-## Is svelte.dev down?
-
-Probably not, but it's possible. If you can't seem to access any `.dev` sites, check out [this SuperUser question and answer](https://superuser.com/q/1413402).
+export default {
+  extensions: ['.svelte', '.n'],
+  preprocess: nornsPreprocess()
+};
+```
 
 ## License
 
-[MIT](LICENSE.md)
+MIT © Daniel Teodoroiu / [Human Synthesis](https://humansynthesis.ai). Built on top of [Svelte](https://github.com/sveltejs/svelte) © Svelte Contributors, MIT licensed.
