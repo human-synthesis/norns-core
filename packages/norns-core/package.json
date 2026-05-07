@@ -1,6 +1,6 @@
 {
   "name": "@human-synthesis/norns-core",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Norns core — Svelte with CoffeeScript, Pug, and UnoCSS preconfigured",
   "license": "MIT",
   "author": "Human Synthesis",

@@ -3,12 +3,16 @@ import { presetUno, presetAttributify, presetIcons, presetTypography } from 'uno
 
 /**
  * Norns UnoCSS Vite plugin with a sensible preset stack.
- * Pass overrides to merge with the defaults.
+ *
+ * Defaults `hmrTopLevelAwait: false` to avoid a TDZ
+ * "Cannot access 'component' before initialization" error in WebKit/Safari
+ * when importing 'virtual:uno.css' from a SvelteKit layout/page module.
+ * Pass `hmrTopLevelAwait: true` if you've verified your stack handles it.
  *
  * @param {import('unocss/vite').VitePluginConfig} [options]
  */
 export function nornsUno(options = {}) {
-	const { presets = [], ...rest } = options;
+	const { presets = [], hmrTopLevelAwait = false, ...rest } = options;
 	return UnoCSS({
 		presets: [
 			presetUno(),
@@ -17,6 +21,7 @@ export function nornsUno(options = {}) {
 			presetTypography(),
 			...presets
 		],
+		hmrTopLevelAwait,
 		...rest
 	});
 }
