@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { transformIfChains, rewritePugClasses } from '../src/preprocess.js';
+import { transformIfChains, transformSnippets, rewritePugClasses } from '../src/preprocess.js';
 
 describe('transformIfChains', () => {
 	test('single +if becomes {#if}/{/if}', () => {
@@ -63,6 +63,103 @@ describe('transformIfChains', () => {
 		const input = `+if("status === 'win'")\n\tdiv yay`;
 		const out = transformIfChains(input);
 		expect(out).toContain(`| {#if status === 'win'}`);
+	});
+});
+
+describe('transformSnippets', () => {
+	test('+snippet with no args becomes {#snippet name()}', () => {
+		const input = `+snippet('header')\n\th2 Title`;
+		const out = transformSnippets(input);
+		expect(out).toContain('| {#snippet header()}');
+		expect(out).toContain('h2 Title');
+		expect(out).toContain('| {/snippet}');
+	});
+
+	test('+snippet with single arg', () => {
+		const input = `+snippet('row', user)\n\t.row {user.name}`;
+		const out = transformSnippets(input);
+		expect(out).toContain('| {#snippet row(user)}');
+		expect(out).toContain('.row {user.name}');
+		expect(out).toContain('| {/snippet}');
+	});
+
+	test('+snippet with multiple args', () => {
+		const input = `+snippet('row', user, idx)\n\t.row {idx}: {user.name}`;
+		const out = transformSnippets(input);
+		expect(out).toContain('| {#snippet row(user, idx)}');
+	});
+
+	test('+snippet with destructured arg', () => {
+		const input = `+snippet('item', { name, count })\n\tspan {name}: {count}`;
+		const out = transformSnippets(input);
+		expect(out).toContain('| {#snippet item({ name, count })}');
+	});
+
+	test('+snippet with parenthesised expression in args', () => {
+		const input = `+snippet('cell', cells[i])\n\t.cell {cells[i]}`;
+		const out = transformSnippets(input);
+		expect(out).toContain('| {#snippet cell(cells[i])}');
+	});
+
+	test('double-quoted name', () => {
+		const input = `+snippet("header")\n\th2 Title`;
+		const out = transformSnippets(input);
+		expect(out).toContain('| {#snippet header()}');
+	});
+
+	test('body lines are de-indented one level', () => {
+		const input = `+snippet('foo')\n\tdiv outer\n\t\tspan inner`;
+		const out = transformSnippets(input);
+		const lines = out.split('\n');
+		expect(lines).toContain('| {#snippet foo()}');
+		expect(lines).toContain('div outer');
+		expect(lines).toContain('\tspan inner');
+		expect(lines).toContain('| {/snippet}');
+	});
+
+	test('nested +snippet inside another +snippet', () => {
+		const input = `+snippet('outer')\n\tdiv\n\t\t+snippet('inner')\n\t\t\tp inner`;
+		const out = transformSnippets(input);
+		expect(out).toContain('| {#snippet outer()}');
+		expect(out).toContain('| {#snippet inner()}');
+		expect(out).toContain('p inner');
+		// Two close tags, one for each
+		const closes = out.match(/\| \{\/snippet\}/g);
+		expect(closes?.length).toBe(2);
+	});
+
+	test('non-snippet content passes through unchanged', () => {
+		const input = `div hello\nspan world`;
+		expect(transformSnippets(input)).toBe(input);
+	});
+
+	test('blank lines inside body are preserved', () => {
+		const input = `+snippet('x')\n\tdiv a\n\n\tdiv b`;
+		const out = transformSnippets(input);
+		expect(out).toContain('div a');
+		expect(out).toContain('div b');
+	});
+
+	test('multiple top-level snippets are independent', () => {
+		const input = `+snippet('a')\n\tp first\n+snippet('b')\n\tp second`;
+		const out = transformSnippets(input);
+		expect(out).toContain('| {#snippet a()}');
+		expect(out).toContain('| {#snippet b()}');
+		expect(out).toContain('p first');
+		expect(out).toContain('p second');
+		const closes = out.match(/\| \{\/snippet\}/g);
+		expect(closes?.length).toBe(2);
+	});
+
+	test('content after a snippet at lower indent is not consumed', () => {
+		const input = `+snippet('a')\n\tp inside\np outside`;
+		const out = transformSnippets(input);
+		expect(out).toContain('| {/snippet}');
+		expect(out).toContain('p outside');
+		// "p outside" must come AFTER {/snippet}, not consumed as body
+		const closeIdx = out.indexOf('| {/snippet}');
+		const outsideIdx = out.indexOf('p outside');
+		expect(outsideIdx).toBeGreaterThan(closeIdx);
 	});
 });
 

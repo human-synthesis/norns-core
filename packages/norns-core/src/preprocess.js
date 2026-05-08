@@ -1,7 +1,7 @@
 import { sveltePreprocess } from 'svelte-preprocess';
 import { compile as compileCivet } from '@danielx/civet';
 
-export { transformIfChains, rewritePugClasses };
+export { transformIfChains, transformSnippets, rewritePugClasses };
 
 
 const SCRIPT_TAG = /<script\b([^>]*)>/i;
@@ -36,6 +36,12 @@ function autoCloseTrailingBlock(content) {
 const IF_RE = /^(\s*)\+if\s*\((.+)\)\s*$/;
 const ELSEIF_RE_TPL = (ind) => new RegExp(`^${escapeRegex(ind)}\\+elseif\\s*\\((.+)\\)\\s*$`);
 const ELSE_RE_TPL = (ind) => new RegExp(`^${escapeRegex(ind)}\\+else\\s*$`);
+
+// `+snippet('name')` or `+snippet('name', arg1, arg2)`. Lazy match with `$`
+// anchor lets the args list contain parens (e.g. `+snippet('row', fn(a))`)
+// because the engine extends the lazy capture only until the outer `)` lands
+// at end-of-line.
+const SNIPPET_RE = /^(\s*)\+snippet\s*\(\s*['"](\w+)['"](?:\s*,\s*([\s\S]+?))?\s*\)\s*$/;
 
 function escapeRegex(s) {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -303,6 +309,78 @@ function transformIfChains(content) {
 	return out.join('\n');
 }
 
+/**
+ * Rewrite Pug `+snippet('name', args…)` blocks to Svelte 5 `{#snippet name(args)}`
+ * via Pug `|` text emit. Recurses into the body so nested snippets work
+ * (`Tabs > +snippet('item', tab) > Card > +snippet('header')`).
+ *
+ * Input:
+ *   +snippet('header')
+ *     h2 Title
+ *
+ *   +snippet('row', user, idx)
+ *     .row Hello {user.name} {idx}
+ *
+ * Output:
+ *   | {#snippet header()}
+ *   h2 Title
+ *   | {/snippet}
+ *
+ *   | {#snippet row(user, idx)}
+ *   .row Hello {user.name} {idx}
+ *   | {/snippet}
+ */
+function transformSnippets(content) {
+	const lines = content.split('\n');
+	const out = [];
+	let i = 0;
+
+	while (i < lines.length) {
+		const m = lines[i].match(SNIPPET_RE);
+		if (!m) {
+			out.push(lines[i]);
+			i++;
+			continue;
+		}
+
+		const indent = m[1];
+		const name = m[2];
+		const args = m[3] ? m[3].trim() : '';
+		const indentDiff = detectIndentDiff(lines, i + 1, indent);
+
+		out.push(`${indent}| {#snippet ${name}(${args})}`);
+		i++;
+
+		// Collect body lines (more indented than the +snippet header) and
+		// process them recursively so nested +snippet blocks resolve.
+		/** @type {string[]} */
+		const body = [];
+		while (i < lines.length) {
+			const cur = lines[i];
+
+			if (cur.trim() === '') {
+				body.push(cur);
+				i++;
+				continue;
+			}
+
+			const lineIndent = cur.match(/^(\s*)/)[1];
+			if (lineIndent.length > indent.length) {
+				body.push(cur.startsWith(indentDiff) ? cur.slice(indentDiff.length) : cur);
+				i++;
+				continue;
+			}
+
+			break;
+		}
+
+		if (body.length > 0) out.push(transformSnippets(body.join('\n')));
+		out.push(`${indent}| {/snippet}`);
+	}
+
+	return out.join('\n');
+}
+
 function nornDefaultLangs() {
 	return {
 		name: 'norns-default-langs',
@@ -311,6 +389,7 @@ function nornDefaultLangs() {
 
 			let out = autoCloseTrailingBlock(content);
 			out = transformIfChains(out);
+			out = transformSnippets(out);
 			out = rewritePugClasses(out);
 
 			// If no <template> exists, scan for script/style blocks and wrap the rest.
