@@ -1,7 +1,7 @@
 {
   "name": "@human-synthesis/norns-core",
   "version": "0.0.6",
-  "description": "Norns core — Svelte preprocessor for CoffeeScript, Pug, and .n files",
+  "description": "Norns core — Svelte preprocessor for Civet, Pug, and .n files",
   "license": "MIT",
   "author": "Daniel Teodoroiu (https://humansynthesis.ai)",
   "type": "module",
@@ -25,9 +25,7 @@
     "svelte": "^5.0.0"
   },
   "dependencies": {
-    "acorn": "^8.14.0",
-    "coffeescript": "^2.7.0",
-    "magic-string": "^0.30.10",
+    "@danielx/civet": "^0.11.0",
     "pug": "^3.0.3",
     "svelte-preprocess": "^6.0.3"
   },

@@ -1,197 +1,8 @@
 import { sveltePreprocess } from 'svelte-preprocess';
-import { parse } from 'acorn';
-import MagicString from 'magic-string';
+import { compile as compileCivet } from '@danielx/civet';
 
-const RUNES = new Set([
-	'$state',
-	'$state.raw',
-	'$derived',
-	'$derived.by',
-	'$effect',
-	'$effect.pre',
-	'$effect.root',
-	'$props',
-	'$bindable'
-]);
-
-function isRuneCall(node) {
-	if (!node || node.type !== 'CallExpression') return false;
-	const c = node.callee;
-	if (c.type === 'Identifier') return RUNES.has(c.name);
-	if (c.type === 'MemberExpression' && c.object.type === 'Identifier') {
-		return RUNES.has(`${c.object.name}.${c.property.name}`);
-	}
-	return false;
-}
-
-/**
- * Fuse `var X; X = expr` patterns (CoffeeScript output) into `let X = expr`,
- * so Svelte 5 accepts runes in declaration position and doesn't warn about
- * non-state variables being "updated".
- *
- * Also handles `var X; ({X, ...} = $props())` (destructured props).
- *
- * Walks function bodies recursively so closures get the same treatment.
- */
 export { transformIfChains, rewritePugClasses };
 
-export function fuseRuneDeclarations(code) {
-	let ast;
-	try {
-		ast = parse(code, {
-			ecmaVersion: 'latest',
-			sourceType: 'module',
-			allowReturnOutsideFunction: true,
-			allowAwaitOutsideFunction: true
-		});
-	} catch {
-		return code;
-	}
-
-	const s = new MagicString(code);
-	walkBody(ast.body);
-
-	function walkBody(body) {
-		const fused = new Set();
-		const varStmts = [];
-		const claimed = new Set();
-
-		for (let i = 0; i < body.length; i++) {
-			const stmt = body[i];
-
-			if (stmt.type === 'VariableDeclaration' && stmt.kind === 'var') {
-				varStmts.push(stmt);
-				continue;
-			}
-			if (stmt.type !== 'ExpressionStatement') continue;
-			const e = stmt.expression;
-
-			// Pattern: X = expr  (where X is var-declared earlier in this scope).
-			// We fuse to `let X = expr` for any expression. Coffee always emits
-			// `var X; X = ...` for top-level assignments, and Svelte 5 reports
-			// `non_reactive_update` warnings for any `var` that's reassigned —
-			// even if the user only wrote a single function declaration. We
-			// limit to TOP LEVEL only (no recursion into nested function bodies)
-			// to avoid MagicString chunk conflicts.
-			//
-			// Special-case: `$derived(IIFE())` — Coffee compiles `$derived do ->`
-			// to `$derived((function(){...})())`, which evaluates ONCE at
-			// definition time instead of reactively. Rewrite to `$derived.by(fn)`.
-			if (
-				e.type === 'AssignmentExpression' &&
-				e.operator === '=' &&
-				e.left.type === 'Identifier' &&
-				isVarDeclared(varStmts, e.left.name) &&
-				!claimed.has(e.left.name)
-			) {
-				claimed.add(e.left.name);
-				fused.add(e.left.name);
-
-				const rewrite = rewriteDerivedIIFE(e.right, code);
-				if (rewrite) {
-					s.overwrite(
-						stmt.start,
-						stmt.end,
-						`let ${e.left.name} = $derived.by(${rewrite});`
-					);
-				} else {
-					s.appendLeft(stmt.start, 'let ');
-				}
-				continue;
-			}
-
-			// Pattern: ({X, Y} = $props())  →  let {X, Y} = $props()
-			if (
-				e.type === 'AssignmentExpression' &&
-				e.operator === '=' &&
-				e.left.type === 'ObjectPattern' &&
-				isRuneCall(e.right)
-			) {
-				const names = collectPatternNames(e.left);
-				if (names.every((n) => isVarDeclared(varStmts, n) && !claimed.has(n))) {
-					for (const n of names) {
-						claimed.add(n);
-						fused.add(n);
-					}
-					const lhs = code.slice(e.left.start, e.left.end);
-					const rhs = code.slice(e.right.start, e.right.end);
-					s.overwrite(stmt.start, stmt.end, `let ${lhs} = ${rhs};`);
-				}
-			}
-		}
-
-		for (const stmt of varStmts) {
-			const remaining = stmt.declarations.filter(
-				(d) => !(d.id.type === 'Identifier' && fused.has(d.id.name))
-			);
-			if (remaining.length === 0) {
-				s.remove(stmt.start, stmt.end);
-			} else if (remaining.length < stmt.declarations.length) {
-				const rebuilt = remaining
-					.map((d) =>
-						d.init ? `${d.id.name} = ${code.slice(d.init.start, d.init.end)}` : d.id.name
-					)
-					.join(', ');
-				s.overwrite(stmt.start, stmt.end, `var ${rebuilt};`);
-			}
-		}
-
-		// Note: we deliberately do NOT recurse into nested function bodies.
-		// Svelte runes ($state, $derived, etc.) only apply at component
-		// top-level. Inner function bodies (event handlers, callbacks) have
-		// `var X; X = ...` patterns from CoffeeScript output too, but they
-		// don't trigger Svelte warnings and don't need fusion. Recursing
-		// also creates MagicString chunk conflicts when an outer assignment
-		// is being modified at the same time as something inside its body.
-	}
-
-	function isVarDeclared(varStmts, name) {
-		for (const stmt of varStmts) {
-			for (const d of stmt.declarations) {
-				if (d.id.type === 'Identifier' && d.id.name === name && !d.init) {
-					return true;
-				}
-			}
-		}
-		return false;
-	}
-
-	/**
-	 * If `node` is `$derived((function(){...})())` (the result of Coffee's
-	 * `$derived do ->`), return the source text of the inner FunctionExpression
-	 * so the caller can rewrite to `$derived.by(<fn>)`. Otherwise null.
-	 */
-	function rewriteDerivedIIFE(node, src) {
-		if (!node || node.type !== 'CallExpression') return null;
-		if (node.callee.type !== 'Identifier' || node.callee.name !== '$derived') return null;
-		if (node.arguments.length !== 1) return null;
-		const arg = node.arguments[0];
-		if (arg.type !== 'CallExpression') return null;
-		if (arg.arguments.length !== 0) return null;
-		const fn = arg.callee;
-		if (fn.type !== 'FunctionExpression' && fn.type !== 'ArrowFunctionExpression') return null;
-		return src.slice(fn.start, fn.end);
-	}
-
-	function collectPatternNames(pat) {
-		const names = [];
-		if (pat.type === 'ObjectPattern') {
-			for (const prop of pat.properties) {
-				if (prop.type === 'Property') {
-					let v = prop.value;
-					// Unwrap default value: `{ x = 1 }` has Property → AssignmentPattern → Identifier
-					if (v.type === 'AssignmentPattern') v = v.left;
-					if (v.type === 'Identifier') names.push(v.name);
-				} else if (prop.type === 'RestElement' && prop.argument.type === 'Identifier') {
-					names.push(prop.argument.name);
-				}
-			}
-		}
-		return names;
-	}
-
-	return s.toString();
-}
 
 const SCRIPT_TAG = /<script\b([^>]*)>/i;
 const TEMPLATE_TAG = /<template\b([^>]*)>/i;
@@ -201,7 +12,7 @@ function hasLangAttr(attrs) {
 }
 
 /**
- * For .norn files: inject lang="coffee" / lang="pug" defaults on
+ * For .norn files: inject lang="civet" / lang="pug" defaults on
  * <script> and <template> blocks, and auto-wrap any top-level non-script /
  * non-style content in <template lang="pug">.
  */
@@ -527,9 +338,9 @@ function nornDefaultLangs() {
 				}
 			}
 
-			// Inject lang="coffee" on <script> tags missing lang=
+			// Inject lang="civet" on <script> tags missing lang=
 			out = out.replace(SCRIPT_TAG, (full, attrs) =>
-				hasLangAttr(attrs) ? full : `<script lang="coffee"${attrs}>`
+				hasLangAttr(attrs) ? full : `<script lang="civet"${attrs}>`
 			);
 
 			// Inject lang="pug" on <template> tags missing lang=
@@ -542,88 +353,67 @@ function nornDefaultLangs() {
 	};
 }
 
-function nornCoffeeRuneFusion() {
-	return {
-		name: 'norns-coffee-rune-fusion',
-		script({ content, attributes }) {
-			if (attributes.lang !== 'coffee' && attributes.lang !== 'coffeescript') return null;
-			const code = fuseRuneDeclarations(content);
-			return code === content ? null : { code };
-		}
-	};
-}
-
 /**
- * Lift `import` statements to the top of a JS module.
+ * Compile `<script lang="civet">` blocks to JavaScript via Civet.
  *
- * CoffeeScript 2 hoists all variables to a single `var x, y, z;` line at the
- * very top of the file, then emits `import` statements *after* it. JS modules
- * require imports above all other top-level statements, and svelte-preprocess
- * + Svelte's MagicString-based pipeline don't handle this gracefully when
- * there are also nested var/assignment patterns inside script function bodies.
+ * Runs before svelte-preprocess so that downstream stages see plain JS.
+ * Civet emits source maps; we forward them so devtools can resolve back to
+ * the original `.civet` source.
  *
- * This pass parses the JS, finds all `ImportDeclaration` nodes, and rewrites
- * them in source order at the very top of the module.
+ * Civet's emit characteristics (verified May 2026, civet@0.11):
+ *   - `count .= $state 0`           → `let count = $state(0)`
+ *   - `count := $state 0`           → `const count = $state(0)`
+ *   - `{ a, b = 0 } := $props()`    → `const { a, b = 0 } = $props()`
+ *   - imports stay where written; if user writes them at top, output is fine
+ *
+ * No `var X; X = expr` split, so `nornCoffeeRuneFusion` and
+ * `nornsCoffeeImportLift` aren't needed for Civet sources.
  */
-export function liftImports(code) {
-	let ast;
-	try {
-		ast = parse(code, {
-			ecmaVersion: 'latest',
-			sourceType: 'module',
-			allowReturnOutsideFunction: true,
-			allowAwaitOutsideFunction: true
-		});
-	} catch {
-		return code;
-	}
-
-	const imports = ast.body.filter((s) => s.type === 'ImportDeclaration');
-	if (imports.length === 0) return code;
-
-	const firstNonImportIdx = ast.body.findIndex((s) => s.type !== 'ImportDeclaration');
-	if (firstNonImportIdx === -1) return code; // already all imports
-
-	const lateImports = imports.filter((i) => ast.body.indexOf(i) > firstNonImportIdx);
-	if (lateImports.length === 0) return code; // already in the right order
-
-	const s = new MagicString(code);
-	const importTexts = imports.map((i) => code.slice(i.start, i.end));
-	for (const i of imports) {
-		s.remove(i.start, i.end);
-	}
-	s.prependLeft(0, importTexts.join('\n') + '\n');
-	return s.toString();
-}
-
-function nornsCoffeeImportLift() {
+function nornsCivetScript() {
 	return {
-		name: 'norns-coffee-import-lift',
-		script({ content, attributes }) {
-			if (attributes.lang !== 'coffee' && attributes.lang !== 'coffeescript') return null;
-			const code = liftImports(content);
-			return code === content ? null : { code };
+		name: 'norns-civet-script',
+		async script({ content, attributes, filename }) {
+			if (attributes.lang !== 'civet' && attributes.lang !== 'cv') return null;
+			const result = await compileCivet(content, {
+				js: true,
+				sourceMap: true,
+				filename: filename ?? 'unknown'
+			});
+			// Drop the `lang` attribute so svelte-preprocess doesn't try to load
+			// a `./transformers/civet` module — at this point the script body is
+			// already plain JS, no further script-level transform needed.
+			const { lang: _drop, ...nextAttrs } = attributes;
+			return {
+				code: result.code,
+				map: result.sourceMap?.json?.(filename ?? 'unknown') ?? null,
+				attributes: nextAttrs
+			};
 		}
 	};
 }
+
 
 /**
  * Norns preprocessor stack.
  *
- * - `.norn` files default `<script>` to CoffeeScript and `<template>` to Pug
- *   (and auto-wrap top-level content in `<template lang="pug">` if no
- *   template block is present).
- * - CoffeeScript output is post-processed: `var X; X = expr` patterns become
- *   `let X = expr` so Svelte 5 runes work without backtick-embedded JS and
- *   normal variables/functions don't trigger non-reactive warnings.
+ * - `.norn` files default `<script>` to Civet and `<template>` to Pug (and
+ *   auto-wrap top-level content in `<template lang="pug">` if no template
+ *   block is present).
+ * - `<script lang="civet">` blocks are compiled to JS via @danielx/civet
+ *   before svelte-preprocess sees them. Civet emits ESM-correct
+ *   `let count = $state(0)` directly, so no rune-fusion or import-lift
+ *   passes are needed.
+ *
+ * CoffeeScript is no longer supported — `lang="coffee"` will fail. Use
+ * `lang="civet"` (or omit lang and rely on the default).
  *
  * @param {import('svelte-preprocess').AutoPreprocessOptions} [options]
  */
 export function nornsPreprocess(options = {}) {
 	return [
 		nornDefaultLangs(),
+		nornsCivetScript(),
 		sveltePreprocess({
-			coffeescript: { bare: true },
 			pug: {},
 			typescript: {
 				compilerOptions: {
@@ -639,8 +429,6 @@ export function nornsPreprocess(options = {}) {
 				}
 			},
 			...options
-		}),
-		nornsCoffeeImportLift(),
-		nornCoffeeRuneFusion()
+		})
 	];
 }
