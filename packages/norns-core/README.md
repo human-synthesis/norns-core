@@ -2,7 +2,7 @@
 
 **AI-driven software architecture and development framework, based on Svelte.**
 
-Svelte preprocessor for the Norns stack: **Pug + Civet** in `.n` files. The `.c` extension is recognised as an alias for `.civet` — both compile through Civet. CoffeeScript is no longer supported.
+Svelte preprocessor for the Norns stack: **Pug + Civet** in `.n` files. The `.c` extension is recognised as an alias for `.civet` — both compile through Civet.
 
 ## Stack
 
@@ -40,6 +40,10 @@ export default {
 - Top-level Pug-only content is auto-wrapped in `<template lang="pug">` so you don't need the wrapper boilerplate.
 - Pug class shorthand is rewritten so Tailwind variants (`.hover:bg-X`) and fractional values (`.gap-2.5`) work without escaping.
 - `+if` / `+elseif` / `+else` chains are rewritten to Svelte block syntax (`{#if}/{:else if}/{:else}/{/if}`).
+
+## Auto-imports — see the umbrella
+
+The auto-import layer (helpers, components, project utilities, UI library presets) lives in [`@human-synthesis/norns`](https://github.com/human-synthesis/norns), not here. `norns-core` is the syntax preprocessor only — the import resolver needs Vite-plugin hooks the umbrella provides.
 
 ## License
 

@@ -444,9 +444,6 @@ function nornDefaultLangs() {
  *   - `count := $state 0`           → `const count = $state(0)`
  *   - `{ a, b = 0 } := $props()`    → `const { a, b = 0 } = $props()`
  *   - imports stay where written; if user writes them at top, output is fine
- *
- * No `var X; X = expr` split, so `nornCoffeeRuneFusion` and
- * `nornsCoffeeImportLift` aren't needed for Civet sources.
  */
 function nornsCivetScript() {
 	return {
@@ -482,9 +479,6 @@ function nornsCivetScript() {
  *   before svelte-preprocess sees them. Civet emits ESM-correct
  *   `let count = $state(0)` directly, so no rune-fusion or import-lift
  *   passes are needed.
- *
- * CoffeeScript is no longer supported — `lang="coffee"` will fail. Use
- * `lang="civet"` (or omit lang and rely on the default).
  *
  * @param {import('svelte-preprocess').AutoPreprocessOptions} [options]
  */
