@@ -267,7 +267,10 @@ function transformIfChains(content) {
 		const elseIfRe = ELSEIF_RE_TPL(chainIndent);
 		const elseRe = ELSE_RE_TPL(chainIndent);
 
-		out.push(`${chainIndent}| {#if ${ifExpr}}`);
+		// Collect each branch's header + body, then recurse on the body so
+		// nested `+if`/`+else` chains resolve. Mirrors `transformSnippets`.
+		/** @type {{ header: string; body: string[] }[]} */
+		const branches = [{ header: `${chainIndent}| {#if ${ifExpr}}`, body: [] }];
 		i++;
 
 		while (i < lines.length) {
@@ -275,19 +278,22 @@ function transformIfChains(content) {
 
 			const eIfM = cur.match(elseIfRe);
 			if (eIfM) {
-				out.push(`${chainIndent}| {:else if ${stripQuotes(eIfM[1])}}`);
+				branches.push({
+					header: `${chainIndent}| {:else if ${stripQuotes(eIfM[1])}}`,
+					body: []
+				});
 				i++;
 				continue;
 			}
 			const eM = cur.match(elseRe);
 			if (eM) {
-				out.push(`${chainIndent}| {:else}`);
+				branches.push({ header: `${chainIndent}| {:else}`, body: [] });
 				i++;
 				continue;
 			}
 
 			if (cur.trim() === '') {
-				out.push(cur);
+				branches[branches.length - 1].body.push(cur);
 				i++;
 				continue;
 			}
@@ -295,7 +301,8 @@ function transformIfChains(content) {
 			const lineIndent = cur.match(/^(\s*)/)[1];
 			if (lineIndent.length > chainIndent.length) {
 				// Body line — de-indent by one level so it sits at the chain's level.
-				out.push(cur.startsWith(indentDiff) ? cur.slice(indentDiff.length) : cur);
+				const deindented = cur.startsWith(indentDiff) ? cur.slice(indentDiff.length) : cur;
+				branches[branches.length - 1].body.push(deindented);
 				i++;
 				continue;
 			}
@@ -303,6 +310,10 @@ function transformIfChains(content) {
 			break;
 		}
 
+		for (const b of branches) {
+			out.push(b.header);
+			if (b.body.length > 0) out.push(transformIfChains(b.body.join('\n')));
+		}
 		out.push(`${chainIndent}| {/if}`);
 	}
 

@@ -64,6 +64,30 @@ describe('transformIfChains', () => {
 		const out = transformIfChains(input);
 		expect(out).toContain(`| {#if status === 'win'}`);
 	});
+
+	test('nested +if/+else inside outer +if recurses correctly', () => {
+		const input = `+if('a')\n\t+if('b')\n\t\tdiv one\n\t+else\n\t\tdiv two`;
+		const out = transformIfChains(input);
+		const ifs = (out.match(/\| \{#if /g) ?? []).length;
+		const closes = (out.match(/\| \{\/if\}/g) ?? []).length;
+		const elses = (out.match(/\| \{:else\}/g) ?? []).length;
+		expect(ifs).toBe(2);
+		expect(closes).toBe(2);
+		expect(elses).toBe(1);
+		// No orphaned `+if` / `+else` tokens left in output
+		expect(out).not.toMatch(/^\s*\+if/m);
+		expect(out).not.toMatch(/^\s*\+else/m);
+	});
+
+	test('nested +if inside +else branch recurses correctly', () => {
+		const input = `+if('a')\n\tdiv top\n+else\n\t+if('b')\n\t\tdiv inner`;
+		const out = transformIfChains(input);
+		const ifs = (out.match(/\| \{#if /g) ?? []).length;
+		const closes = (out.match(/\| \{\/if\}/g) ?? []).length;
+		expect(ifs).toBe(2);
+		expect(closes).toBe(2);
+		expect(out).not.toMatch(/^\s*\+if/m);
+	});
 });
 
 describe('transformSnippets', () => {

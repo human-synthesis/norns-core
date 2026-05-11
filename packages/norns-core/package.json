@@ -1,6 +1,6 @@
 {
   "name": "@human-synthesis/norns-core",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "Norns core — Svelte preprocessor for Civet, Pug, and .n files",
   "license": "MIT",
   "author": "Daniel Teodoroiu (https://humansynthesis.ai)",
