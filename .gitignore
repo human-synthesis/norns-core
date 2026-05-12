@@ -26,3 +26,4 @@ tmp
 benchmarking/.profiles
 benchmarking/compare/.results
 benchmarking/compare/.profiles
+bun.lock

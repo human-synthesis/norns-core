@@ -1,7 +1,7 @@
 import { sveltePreprocess } from 'svelte-preprocess';
 import { compile as compileCivet } from '@danielx/civet';
 
-export { transformIfChains, transformSnippets, rewritePugClasses };
+export { transformIfChains, transformSnippets, rewritePugClasses, extractPugClasses };
 
 
 const SCRIPT_TAG = /<script\b([^>]*)>/i;
@@ -203,6 +203,110 @@ function rewritePugLine(line) {
 
 	const newAttrs = mergeClassIntoAttrs(attrs, routed);
 	return `${indent}${tag}${safe.join('')}${newAttrs}${rest}`;
+}
+
+/**
+ * Walk `content` and return the set of Pug class-shorthand names found in
+ * element class chains (`.foo.bar-baz.hover:bg-red`) plus the value of any
+ * `class="..."` attribute on the same lines.
+ *
+ * Tailwind v4's content scanner extracts utility candidates from string
+ * contexts (`class="…"`, JS strings) but doesn't recognise Pug's chained
+ * shorthand — the dotted chain looks like one token. Pages render with the
+ * class names present in the markup but no matching CSS, which is silent
+ * and hard to spot. The companion `nornsTailwindPlugin()` Vite plugin in
+ * `@human-synthesis/norns` calls this and feeds the union into Tailwind via
+ * an injected `@source inline(...)` directive.
+ *
+ * Skips lines inside `<script>` / `<style>` blocks. Skips lines that begin
+ * with `|`, `<`, `+`, `:`, or `//` (Pug text emits, raw HTML, mixin calls,
+ * pug filters, and comments). For each remaining line, reads an optional
+ * tag, then chained `.<class>` segments (handling `:`, `/`, and fractional
+ * `.\d+` continuations), then collects the value of any `class="…"` or
+ * `class!="…"` attribute that follows.
+ *
+ * Pure function — does not mutate `content`. Returns a `Set<string>` so
+ * callers can union across many files without dedup work.
+ *
+ * @param {string} content
+ * @returns {Set<string>}
+ */
+function extractPugClasses(content) {
+	const out = new Set();
+	if (typeof content !== 'string' || content.length === 0) return out;
+
+	const blockRanges = [];
+	const blockRe = /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi;
+	let m;
+	while ((m = blockRe.exec(content)) !== null) {
+		blockRanges.push([m.index, m.index + m[0].length]);
+	}
+
+	const lines = content.split('\n');
+	let offset = 0;
+	for (const line of lines) {
+		const lineEnd = offset + line.length;
+		const inBlock = blockRanges.some(([s, e]) => offset < e && lineEnd > s);
+		if (!inBlock) collectFromPugLine(line, out);
+		offset = lineEnd + 1; // +1 for the newline
+	}
+	return out;
+}
+
+function collectFromPugLine(line, into) {
+	const trimmed = line.trimStart();
+	if (!trimmed) return;
+	const first = trimmed[0];
+	if (first === '|' || first === '<') return;
+	if (trimmed.startsWith('//')) return;
+	if (first === '+' || first === ':') return;
+
+	let i = 0;
+	while (i < line.length && /\s/.test(line[i])) i++;
+
+	// Optional element tag.
+	if (i < line.length && /[a-zA-Z]/.test(line[i])) {
+		let j = i;
+		while (j < line.length && /[\w-]/.test(line[j])) j++;
+		i = j;
+	}
+
+	// `.class` / `#id` segments. Mirrors `rewritePugLine` so the two stay
+	// in sync — both must accept the same chained-shorthand grammar.
+	while (i < line.length && (line[i] === '.' || line[i] === '#')) {
+		const sep = line[i];
+		let j = i + 1;
+		if (sep === '#') {
+			while (j < line.length && /[\w-]/.test(line[j])) j++;
+		} else {
+			while (j < line.length && /[\w/:-]/.test(line[j])) j++;
+			while (j < line.length && line[j] === '.' && /\d/.test(line[j + 1] || '')) {
+				j++;
+				while (j < line.length && /\d/.test(line[j])) j++;
+			}
+		}
+		if (j === i + 1) break;
+		if (sep === '.') into.add(line.slice(i + 1, j));
+		i = j;
+	}
+
+	// `(attrs)` block — pull class="..." and class!="..." values too. Pug
+	// chained shorthand often coexists with a `(class="...")` attribute on
+	// the same line (especially after `rewritePugClasses` routes special
+	// chars there). Capturing both lets a single pass cover the full set.
+	if (line[i] === '(') {
+		const close = findMatchingParen(line, i);
+		if (close !== -1) {
+			const attrs = line.slice(i + 1, close);
+			const re = /(?:^|\s)class\s*!?=\s*"([^"]*)"/g;
+			let am;
+			while ((am = re.exec(attrs)) !== null) {
+				for (const tok of am[1].split(/\s+/)) {
+					if (tok) into.add(tok);
+				}
+			}
+		}
+	}
 }
 
 function mergeClassIntoAttrs(attrsStr, classesToAdd) {

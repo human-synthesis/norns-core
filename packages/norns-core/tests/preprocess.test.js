@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { transformIfChains, transformSnippets, rewritePugClasses } from '../src/preprocess.js';
+import {
+	transformIfChains,
+	transformSnippets,
+	rewritePugClasses,
+	extractPugClasses
+} from '../src/preprocess.js';
 
 describe('transformIfChains', () => {
 	test('single +if becomes {#if}/{/if}', () => {
@@ -289,5 +294,135 @@ describe('rewritePugClasses', () => {
 		const input = `a.hover:foo(href="/") Click`;
 		const out = rewritePugClasses(input);
 		expect(out).toBe(`a(class="hover:foo" href="/") Click`);
+	});
+});
+
+describe('extractPugClasses', () => {
+	const arr = (s) => [...extractPugClasses(s)].sort();
+
+	test('returns empty set for empty / non-string input', () => {
+		expect([...extractPugClasses('')]).toEqual([]);
+		expect([...extractPugClasses(null)]).toEqual([]);
+	});
+
+	test('extracts from simple chained shorthand', () => {
+		const input = `.flex.items-center.justify-center.p-4`;
+		expect(arr(input)).toEqual(['flex', 'items-center', 'justify-center', 'p-4']);
+	});
+
+	test('extracts from element with tag and chain', () => {
+		const input = `header.shrink-0.h-14.flex.items-center.justify-between`;
+		expect(arr(input)).toEqual([
+			'flex',
+			'h-14',
+			'items-center',
+			'justify-between',
+			'shrink-0'
+		]);
+	});
+
+	test('extracts both chain classes and class="..." attr from same line', () => {
+		const input = `aside.flex.h-screen(class="w-64 shrink-0")`;
+		expect(arr(input)).toEqual(['flex', 'h-screen', 'shrink-0', 'w-64']);
+	});
+
+	test('handles class!="..." dynamic attr the same way', () => {
+		const input = `div.h-full(class!="bg-white {extra}")`;
+		// Captures static tokens; interpolation `{extra}` is excluded as one token.
+		const got = [...extractPugClasses(input)];
+		expect(got).toContain('h-full');
+		expect(got).toContain('bg-white');
+	});
+
+	test('handles colon variants and slash opacity', () => {
+		const input = `a.text-blue.hover:bg-red.bg-white/40`;
+		expect(arr(input)).toEqual(['bg-white/40', 'hover:bg-red', 'text-blue']);
+	});
+
+	test('handles fractional .X.Y suffixes (gap-0.5)', () => {
+		const input = `ul.list-none.gap-0.5.flex`;
+		expect(arr(input)).toEqual(['flex', 'gap-0.5', 'list-none']);
+	});
+
+	test('skips lines inside <script> blocks', () => {
+		const input = [
+			`.outer`,
+			`<script>`,
+			`  let x = '.inner'`,
+			`</script>`
+		].join('\n');
+		expect(arr(input)).toEqual(['outer']);
+	});
+
+	test('skips lines inside <style> blocks', () => {
+		const input = [
+			`.outer.flex`,
+			`<style>`,
+			`  .leaky-class { color: red }`,
+			`</style>`
+		].join('\n');
+		expect(arr(input)).toEqual(['flex', 'outer']);
+	});
+
+	test('ignores text emit lines (`|`), raw HTML (`<`), mixin calls (`+`), and pug comments (`//`)', () => {
+		const input = [
+			`.kept`,
+			`| .ignored-text`,
+			`<div class="ignored-html">`,
+			`+if('cond')`,
+			`  .nested-kept`,
+			`// .ignored-comment`
+		].join('\n');
+		// `+if(...)` lines are skipped (mixin call), but nested body lines still scan.
+		expect(arr(input)).toContain('kept');
+		expect(arr(input)).toContain('nested-kept');
+		expect(arr(input)).not.toContain('ignored-text');
+		expect(arr(input)).not.toContain('ignored-comment');
+	});
+
+	test('IDs are skipped (collects only classes)', () => {
+		const input = `div#main.flex.gap-2`;
+		expect(arr(input)).toEqual(['flex', 'gap-2']);
+	});
+
+	test('multiple class="..." attrs on one line all caught', () => {
+		// Pug doesn't actually allow this but be defensive.
+		const input = `Btn(class="primary" otherClass="ignored")`;
+		expect([...extractPugClasses(input)]).toContain('primary');
+	});
+
+	test('handles trailing text after chain', () => {
+		const input = `a.flex Click me`;
+		expect(arr(input)).toEqual(['flex']);
+	});
+
+	test('full sample of a real .n template', () => {
+		const input = [
+			`.min-h-screen.flex.items-center.justify-center.p-4`,
+			`	Card(class="w-full max-w-md")`,
+			`		.text-center.space-y-1.mb-6`,
+			`			h1.text-5xl.font-extrabold.tracking-tight az`,
+			`			Btn(variant="primary" type="submit" class="w-full") Send code`,
+			``,
+			`<script>`,
+			`	import { base } from '$app/paths'`,
+			`</script>`
+		].join('\n');
+		const got = arr(input);
+		expect(got).toContain('min-h-screen');
+		expect(got).toContain('flex');
+		expect(got).toContain('items-center');
+		expect(got).toContain('justify-center');
+		expect(got).toContain('p-4');
+		expect(got).toContain('w-full');
+		expect(got).toContain('max-w-md');
+		expect(got).toContain('text-center');
+		expect(got).toContain('space-y-1');
+		expect(got).toContain('mb-6');
+		expect(got).toContain('text-5xl');
+		expect(got).toContain('font-extrabold');
+		expect(got).toContain('tracking-tight');
+		// Script-block contents not collected.
+		expect(got).not.toContain('base');
 	});
 });
