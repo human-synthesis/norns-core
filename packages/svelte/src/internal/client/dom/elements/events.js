@@ -237,9 +237,9 @@ export function handle_event_propagation(event) {
 	});
 
 	// This started because of Chromium issue https://chromestatus.com/feature/5128696823545856,
-	// where removal or moving of of the DOM can cause sync `blur` events to fire, which can cause logic
+	// where removal or moving of the DOM can cause sync `blur` events to fire, which can cause logic
 	// to run inside the current `active_reaction`, which isn't what we want at all. However, on reflection,
-	// it's probably best that all event handled by Svelte have this behaviour, as we don't really want
+	// it's probably best that all events handled by Svelte have this behaviour, as we don't really want
 	// an event handler to run in the context of another reaction or effect.
 	var previous_reaction = active_reaction;
 	var previous_effect = active_effect;
@@ -257,12 +257,7 @@ export function handle_event_propagation(event) {
 		var other_errors = [];
 
 		while (current_target !== null) {
-			/** @type {null | Element} */
-			var parent_element =
-				current_target.assignedSlot ||
-				current_target.parentNode ||
-				/** @type {any} */ (current_target).host ||
-				null;
+			if (current_target === handler_element) break;
 
 			try {
 				// @ts-expect-error
@@ -284,10 +279,10 @@ export function handle_event_propagation(event) {
 					throw_error = error;
 				}
 			}
-			if (event.cancelBubble || parent_element === handler_element || parent_element === null) {
-				break;
-			}
-			current_target = parent_element;
+			if (event.cancelBubble) break;
+
+			path_idx++;
+			current_target = path_idx < path.length ? /** @type {Element} */ (path[path_idx]) : null;
 		}
 
 		if (throw_error) {
