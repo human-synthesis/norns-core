@@ -29,3 +29,4 @@ benchmarking/compare/.results
 benchmarking/compare/.profiles
 benchmarking/compare/results.html
 bun.lock
+.claude/
