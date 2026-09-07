@@ -1,6 +1,6 @@
 {
   "name": "@human-synthesis/norns-core",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "Norns core — Svelte preprocessor for Civet, Pug, and .n files",
   "license": "MIT",
   "author": "Daniel Teodoroiu (https://humansynthesis.ai)",
@@ -11,14 +11,17 @@
   },
   "files": [
     "src",
+    "types",
     "README.md"
   ],
+  "types": "./types/index.d.ts",
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "build:types": "tsc -p tsconfig.types.json"
   },
   "exports": {
-    ".": "./src/index.js",
-    "./preprocess": "./src/preprocess.js",
+    ".": { "types": "./types/index.d.ts", "default": "./src/index.js" },
+    "./preprocess": { "types": "./types/preprocess.d.ts", "default": "./src/preprocess.js" },
     "./package.json": "./package.json"
   },
   "peerDependencies": {

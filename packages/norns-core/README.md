@@ -37,9 +37,24 @@ export default {
 
 - `.n` files default `<script>` to `lang="civet"` and `<template>` to `lang="pug"` — write neither attribute and it just works.
 - `<script lang="civet">` blocks are compiled to JavaScript via [@danielx/civet](https://civet.dev) before svelte-preprocess sees them.
-- Top-level Pug-only content is auto-wrapped in `<template lang="pug">` so you don't need the wrapper boilerplate.
-- Pug class shorthand is rewritten so Tailwind variants (`.hover:bg-X`) and fractional values (`.gap-2.5`) work without escaping.
-- `+if` / `+elseif` / `+else` chains are rewritten to Svelte block syntax (`{#if}/{:else if}/{:else}/{/if}`).
+- Top-level Pug-only content is auto-wrapped in `<template lang="pug">` so you don't need the wrapper boilerplate; a trailing `<script>` block may omit its closing tag.
+- Pug class shorthand is rewritten so Tailwind variants (`.hover:bg-X`), fractional values (`.gap-2.5`) and slashes (`.bg-white/40`) work without escaping.
+- `+if` / `+elseif` / `+else` chains are rewritten to Svelte block syntax (`{#if}/{:else if}/{:else}/{/if}`), and `+snippet('name', args)` blocks to `{#snippet name(args)}`.
+- Pug and Civet errors are reported as `file:line:column` **in the `.n` file you wrote**, with a code frame — not against svelte-preprocess's ~50-line mixin prelude or the script block's own numbering.
+
+## Template syntax
+
+| Write | Becomes |
+|---|---|
+| `+if('cond')` … `+elseif('other')` … `+else` | `{#if cond}` … `{:else if other}` … `{:else}` … `{/if}` |
+| `+each('items as item (item.id)')` | `{#each items as item (item.id)}` … `{/each}` — the Svelte `as` form; `item of items` is **not** valid |
+| `+snippet('row', user, idx)` | `{#snippet row(user, idx)}` … `{/snippet}` |
+| `\| {@render row(u, i)}` / `\| {@html raw}` | passed through as text — any line starting with `{` needs the `\| ` prefix |
+| `attr!="{expr}"` | `attr={expr}` (Svelte expression); plain `attr="text"` stays a string |
+| `.flex.items-center.gap-2.5(class="hover:bg-x")` | `class="flex items-center gap-2.5 hover:bg-x"` |
+| `+key('expr')`, `+await('p')` / `+then('v')` / `+catch('e')` | the matching Svelte blocks (svelte-preprocess mixins) |
+
+The `<script>` block is Civet by default (`lang="ts"` / `lang="js"` opt out): `{ a, b = 1 } := $props()`, `count .= $state 0` (use `.=` for anything you reassign), `total := $derived a + b`, `$effect => …`.
 
 ## Auto-imports — see the umbrella
 

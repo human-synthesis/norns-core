@@ -1,10 +1,10 @@
 /**
- * C-01: pin preprocessor behavior for every construct in the vetted
- * generated subset (norns docs/vetted-subset.md). The norns generator
- * only emits these constructs; this suite guarantees the preprocessor
- * keeps handling them (and keeps *rejecting* the documented traps) so
- * upgrades of civet/pug/svelte-preprocess can't silently break
- * generated apps.
+ * Pin preprocessor behavior for the vetted subset of Civet + Pug constructs
+ * that Norns apps (norns-app, norns-demo, norns-ui) are written in. The
+ * suite guarantees the preprocessor keeps handling them, and keeps
+ * *rejecting* the documented traps listed in
+ * docs/reference/CLAUDE_NORNS_SNIPPET.md, so upgrades of civet / pug /
+ * svelte-preprocess can't silently break apps.
  */
 
 import { describe, expect, test } from 'bun:test';

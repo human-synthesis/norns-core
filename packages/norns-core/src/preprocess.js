@@ -3,7 +3,6 @@ import { compile as compileCivet } from '@danielx/civet';
 
 export { transformIfChains, transformSnippets, rewritePugClasses, extractPugClasses };
 
-
 const SCRIPT_TAG = /<script\b([^>]*)>/i;
 const TEMPLATE_TAG = /<template\b([^>]*)>/i;
 
@@ -45,6 +44,259 @@ const SNIPPET_RE = /^(\s*)\+snippet\s*\(\s*['"](\w+)['"](?:\s*,\s*([\s\S]+?))?\s
 
 function escapeRegex(s) {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/* === Error mapping ===========================================================
+ *
+ * svelte-preprocess renders Pug with a ~50-line mixin prelude prepended, so
+ * raw Pug errors point ~50 lines past the real one; on top of that, `.n`
+ * files are re-arranged (template first, +if/+snippet rewritten) before Pug
+ * sees them. Civet errors inside `<script>` blocks are relative to the
+ * block, not the file. Both are mapped back to `file:line:column` in the
+ * source the user actually wrote, so an agent (or a human) opens the right
+ * line on the first try.
+ */
+
+/** Original file contents, keyed by filename, stashed by nornDefaultLangs. */
+const ORIGINAL_SOURCES = new Map();
+const FALLBACK_PUG_PRELUDE = 52;
+
+function rememberSource(filename, content) {
+	if (!filename) return;
+	if (ORIGINAL_SOURCES.size > 2000) ORIGINAL_SOURCES.clear();
+	ORIGINAL_SOURCES.set(filename, content);
+}
+
+/** Parse Pug's numbered code frame out of an error message. */
+function parsePugFrame(message) {
+	const frame = [];
+	let marked = null;
+	for (const line of String(message).split('\n')) {
+		const m = line.match(/^\s*(>)?\s*(\d+)\|(.*)$/);
+		if (!m) continue;
+		const n = Number(m[2]);
+		frame.push({ n, text: m[3].replace(/^ /, ''), marked: !!m[1] });
+		if (m[1]) marked = n;
+	}
+	return { frame, marked };
+}
+
+/** The human-readable core of a Pug error (last non-frame, non-location line). */
+function pugMessageCore(message) {
+	const lines = String(message).split('\n');
+	let core = '';
+	for (const raw of lines) {
+		const line = raw.trim();
+		if (!line) continue;
+		if (/^\[svelte-preprocess\]/.test(line)) continue;
+		if (/^>?\s*\d+\|/.test(line)) continue;
+		if (/^-+\^?$/.test(line)) continue;
+		if (/^\S+:\d+:\d+$/.test(line)) continue;
+		core = line;
+	}
+	return core || 'Pug error';
+}
+
+function extractTemplate(content) {
+	const m = content.match(/<template\b[^>]*>([\s\S]*?)<\/template>/i);
+	return m ? m[1] : content;
+}
+
+/**
+ * Reverse the `.n` rewrites for one template line so it can be looked up in
+ * the original source: `| {#if x}` came from `+if('x')`, etc.
+ */
+function sourceVariants(text) {
+	const t = text.trim();
+	const out = [text, t];
+	let m;
+	if ((m = t.match(/^\|\s*\{#if (.+)\}$/))) out.push(`+if('${m[1]}')`, `+if("${m[1]}")`);
+	else if ((m = t.match(/^\|\s*\{:else if (.+)\}$/)))
+		out.push(`+elseif('${m[1]}')`, `+elseif("${m[1]}")`);
+	else if (/^\|\s*\{:else\}$/.test(t)) out.push('+else');
+	else if ((m = t.match(/^\|\s*\{#snippet (\w+)\((.*)\)\}$/))) {
+		out.push(m[2] ? `+snippet('${m[1]}', ${m[2]})` : `+snippet('${m[1]}')`);
+	}
+	return out;
+}
+
+/**
+ * Find the original line for a (possibly rewritten) template line.
+ *
+ * @returns {{ line: number, exact: boolean }}
+ */
+function findOriginalLine(text, origLines, approx) {
+	const trimmed = text.trim();
+	const clamp = (n) => Math.min(Math.max(1, n), Math.max(1, origLines.length));
+	if (!trimmed) return { line: clamp(approx), exact: false };
+
+	const nearest = (idxs) =>
+		idxs.reduce(
+			(best, j) => (Math.abs(j + 1 - approx) < Math.abs(best + 1 - approx) ? j : best),
+			idxs[0]
+		);
+
+	for (const variant of sourceVariants(text)) {
+		const v = variant.trim();
+		if (!v) continue;
+		const hits = [];
+		for (let j = 0; j < origLines.length; j++) {
+			if (origLines[j] === variant || origLines[j].trim() === v) hits.push(j);
+		}
+		if (hits.length === 1) return { line: hits[0] + 1, exact: true };
+		if (hits.length > 1) return { line: nearest(hits) + 1, exact: true };
+	}
+
+	// Class-shorthand rewrites move classes into `(class="...")`; fall back to
+	// the tag/leading-class prefix.
+	const prefix = trimmed.match(/^[\w.#-]+/)?.[0];
+	if (prefix && prefix.length >= 3) {
+		const hits = [];
+		for (let j = 0; j < origLines.length; j++) {
+			if (origLines[j].trim().startsWith(prefix)) hits.push(j);
+		}
+		if (hits.length > 0) return { line: nearest(hits) + 1, exact: false };
+	}
+	return { line: clamp(approx), exact: false };
+}
+
+function frameOf(lines, line, column) {
+	const from = Math.max(1, line - 2);
+	const to = Math.min(lines.length, line + 1);
+	const width = String(to).length;
+	const out = [];
+	for (let n = from; n <= to; n++) {
+		out.push(`${n === line ? '>' : ' '} ${String(n).padStart(width)}| ${lines[n - 1] ?? ''}`);
+		if (n === line && column)
+			out.push(`  ${' '.repeat(width)}| ${' '.repeat(Math.max(0, column - 1))}^`);
+	}
+	return out.join('\n');
+}
+
+/**
+ * Turn a raw svelte-preprocess Pug error into one that points at the
+ * source file. Non-Pug errors pass through untouched.
+ */
+function mapPugError(e, content, filename) {
+	if (!e || typeof e.message !== 'string') return e;
+	if (!/Pug error|pug/i.test(e.message) && typeof e.line !== 'number') return e;
+
+	const { frame, marked } = parsePugFrame(e.message);
+	const pugLine = typeof e.line === 'number' ? e.line : marked;
+	if (!pugLine) return e;
+
+	const tplLines = extractTemplate(content).split('\n');
+
+	// Vote for the prelude offset using every frame line we can find verbatim
+	// in the template we handed to Pug.
+	const votes = new Map();
+	for (const f of frame) {
+		if (!f.text.trim()) continue;
+		for (let j = 0; j < tplLines.length; j++) {
+			if (tplLines[j] === f.text) {
+				const off = f.n - (j + 1);
+				votes.set(off, (votes.get(off) ?? 0) + 1);
+			}
+		}
+	}
+	let offset = FALLBACK_PUG_PRELUDE;
+	let best = 0;
+	for (const [off, n] of votes) {
+		if (n > best) {
+			best = n;
+			offset = off;
+		}
+	}
+
+	const tplLine = pugLine - offset;
+	const text = tplLines[tplLine - 1] ?? '';
+
+	const original = (filename && ORIGINAL_SOURCES.get(filename)) ?? content;
+	const origLines = original.split('\n');
+	const tplStart = Math.max(
+		0,
+		origLines.findIndex((l) => /<template\b/i.test(l))
+	);
+	const { line, exact } = findOriginalLine(text, origLines, tplLine + tplStart);
+	const column = typeof e.column === 'number' && e.column > 0 ? e.column : null;
+
+	const core = pugMessageCore(e.message);
+	const name = filename ? filename.split(/[\\/]/).pop() : 'template';
+	const frameText = frameOf(origLines, line, column);
+	const err = new Error(
+		`${name}:${line}:${column ?? 1}: Pug: ${core}${exact ? '' : ' (approximate line)'}\n\n${frameText}`
+	);
+	err.name = 'PugError';
+	err.code = 'norns_pug_error';
+	err.line = line;
+	err.column = column;
+	err.filename = filename;
+	err.frame = frameText;
+	err.approximate = !exact;
+	err.pugLine = pugLine;
+	err.cause = e;
+	return err;
+}
+
+/**
+ * Map a Civet ParseError thrown for a `<script>` block back to the line in
+ * the containing file.
+ */
+function mapCivetScriptError(e, content, filename) {
+	if (!e || typeof e.line !== 'number') return e;
+	const original = filename && ORIGINAL_SOURCES.get(filename);
+	if (!original) return e;
+
+	const blockRe = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+	let m;
+	let bodyStart = -1;
+	let firstBodyStart = -1;
+	while ((m = blockRe.exec(original)) !== null) {
+		const start = m.index + m[0].indexOf('>') + 1;
+		if (firstBodyStart < 0) firstBodyStart = start;
+		if (m[1] === content) {
+			bodyStart = start;
+			break;
+		}
+	}
+	if (bodyStart < 0) bodyStart = firstBodyStart;
+	if (bodyStart < 0) return e;
+
+	const bodyStartLine = original.slice(0, bodyStart).split('\n').length;
+	const line = bodyStartLine + e.line - 1;
+	const column = typeof e.column === 'number' ? e.column : null;
+	const origLines = original.split('\n');
+	const name = filename.split(/[\\/]/).pop();
+	const rest = String(e.message).split('\n');
+	const head = rest.shift() ?? '';
+	const core = head.replace(/^\S+:\d+:\d+\s*/, '');
+	const frameText = frameOf(origLines, line, column);
+	e.message = [`${name}:${line}:${column ?? 1}: Civet: ${core}`, ...rest, '', frameText].join('\n');
+	e.line = line;
+	e.column = column;
+	e.filename = filename;
+	e.frame = frameText;
+	e.code = 'norns_civet_error';
+	return e;
+}
+
+/**
+ * Wrap svelte-preprocess so Pug failures come back mapped to the source.
+ */
+function withMappedPugErrors(sp) {
+	return {
+		...sp,
+		name: sp.name ?? 'norns-svelte-preprocess',
+		markup: sp.markup
+			? async (args) => {
+					try {
+						return await sp.markup(args);
+					} catch (e) {
+						throw mapPugError(e, args.content, args.filename);
+					}
+				}
+			: undefined
+	};
 }
 
 function stripQuotes(s) {
@@ -501,6 +753,7 @@ function nornDefaultLangs() {
 		name: 'norns-default-langs',
 		markup({ content, filename }) {
 			if (!filename || !filename.endsWith('.n')) return null;
+			rememberSource(filename, content);
 
 			let out = autoCloseTrailingBlock(content);
 			out = transformIfChains(out);
@@ -565,11 +818,16 @@ function nornsCivetScript() {
 		name: 'norns-civet-script',
 		async script({ content, attributes, filename }) {
 			if (attributes.lang !== 'civet' && attributes.lang !== 'cv') return null;
-			const result = await compileCivet(content, {
-				js: true,
-				sourceMap: true,
-				filename: filename ?? 'unknown'
-			});
+			let result;
+			try {
+				result = await compileCivet(content, {
+					js: true,
+					sourceMap: true,
+					filename: filename ?? 'unknown'
+				});
+			} catch (e) {
+				throw mapCivetScriptError(e, content, filename);
+			}
 			// Drop the `lang` attribute so svelte-preprocess doesn't try to load
 			// a `./transformers/civet` module — at this point the script body is
 			// already plain JS, no further script-level transform needed.
@@ -582,7 +840,6 @@ function nornsCivetScript() {
 		}
 	};
 }
-
 
 /**
  * Norns preprocessor stack.
@@ -601,22 +858,24 @@ export function nornsPreprocess(options = {}) {
 	return [
 		nornDefaultLangs(),
 		nornsCivetScript(),
-		sveltePreprocess({
-			pug: {},
-			typescript: {
-				compilerOptions: {
-					// Silence TS 6.x's deprecation warning for older moduleResolution
-					// values (node10) that some toolchains still default to.
-					ignoreDeprecations: '6.0',
-					// Preserve value imports (Svelte component imports look "unused"
-					// to the TS transpiler since their usage lives in the template,
-					// but they MUST be emitted). verbatimModuleSyntax keeps any
-					// non-`import type` imports verbatim.
-					verbatimModuleSyntax: true,
-					isolatedModules: true
-				}
-			},
-			...options
-		})
+		withMappedPugErrors(
+			sveltePreprocess({
+				pug: {},
+				typescript: {
+					compilerOptions: {
+						// Silence TS 6.x's deprecation warning for older moduleResolution
+						// values (node10) that some toolchains still default to.
+						ignoreDeprecations: '6.0',
+						// Preserve value imports (Svelte component imports look "unused"
+						// to the TS transpiler since their usage lives in the template,
+						// but they MUST be emitted). verbatimModuleSyntax keeps any
+						// non-`import type` imports verbatim.
+						verbatimModuleSyntax: true,
+						isolatedModules: true
+					}
+				},
+				...options
+			})
+		)
 	];
 }
